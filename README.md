@@ -55,6 +55,12 @@ cd sentrysearch
 uv tool install .
 ```
 
+> **Requires Python 3.11 or 3.12** (PyTorch wheels don't yet support 3.13+). If your default Python is newer, install a managed 3.12 and pin the tool install:
+> ```bash
+> uv python install 3.12
+> uv tool install --python 3.12 .
+> ```
+
 3. Set up your API key (or [use a local model instead](#local-backend-no-api-key-needed)):
 
 ```bash
