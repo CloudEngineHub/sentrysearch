@@ -2,6 +2,7 @@
 
 Semantic search over video footage. Type what you're looking for, get a trimmed clip back.
 
+**The Pipeline:**
 1. SentrySearch (find an event in your footage)
 2. [SentryMerge](https://github.com/ssrajadh/sentrymerge) (auto-cut the multi-cam footage into one video that follows the subject across cameras)
 3. [SentryBlur](https://github.com/ssrajadh/sentryblur) (auto-redact sensitive information)
