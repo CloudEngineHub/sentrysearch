@@ -271,6 +271,13 @@ class TestDetectBackend:
 
 
 class TestDetectIndex:
+    @pytest.fixture(autouse=True)
+    def _all_backends_installed(self, monkeypatch):
+        """Ordering tests shouldn't depend on whether torch or mlx happens to
+        be installed in the test environment."""
+        monkeypatch.setattr("sentrysearch.store._backend_installed",
+                            lambda backend: True)
+
     def test_empty_db(self, tmp_path):
         from sentrysearch.store import SentryStore, detect_index
 
@@ -294,6 +301,104 @@ class TestDetectIndex:
             "source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0,
         })
         assert detect_index(tmp_path / "db") == ("local", "qwen2b")
+
+    def test_detects_mlx_with_full_model_ref(self, tmp_path):
+        from sentrysearch.store import SentryStore, detect_index
+
+        ref = "/models/Qwen3-VL-Embedding-2B-mlx-4bit"
+        store = SentryStore(db_path=tmp_path / "db", backend="mlx", model=ref)
+        store.add_chunk("c1", _make_embedding(), {
+            "source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0,
+        })
+        # the full reference comes back from metadata, not the slugged name,
+        # so a later search can reload the same model
+        assert detect_index(tmp_path / "db") == ("mlx", ref)
+
+    def test_local_wins_over_mlx(self, tmp_path):
+        """Indexing once with MLX must not change what a bare search hits
+        for someone who already has a local index."""
+        from sentrysearch.store import SentryStore, detect_index
+
+        db = tmp_path / "db"
+        for backend, model in (("mlx", "/m/x"), ("local", "qwen2b")):
+            SentryStore(db_path=db, backend=backend, model=model).add_chunk(
+                "c1", _make_embedding(),
+                {"source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0})
+        assert detect_index(db) == ("local", "qwen2b")
+
+    def test_legacy_local_wins_over_mlx(self, tmp_path):
+        from sentrysearch.store import SentryStore, detect_index
+
+        db = tmp_path / "db"
+        for backend, model in (("mlx", "/m/x"), ("local", None)):
+            SentryStore(db_path=db, backend=backend, model=model).add_chunk(
+                "c1", _make_embedding(),
+                {"source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0})
+        assert detect_index(db)[0] == "local"
+
+    def test_scoped_detection_finds_mlx_behind_local(self, tmp_path):
+        """A caller that asked for mlx must get the mlx model, not the local
+        one that happens to be checked first."""
+        from sentrysearch.store import SentryStore, detect_index
+
+        db = tmp_path / "db"
+        for backend, model in (("local", "qwen2b"), ("mlx", "/m/x")):
+            SentryStore(db_path=db, backend=backend, model=model).add_chunk(
+                "c1", _make_embedding(),
+                {"source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0})
+        assert detect_index(db, backend="mlx") == ("mlx", "/m/x")
+        assert detect_index(db, backend="local") == ("local", "qwen2b")
+
+    def test_uninstalled_local_yields_to_mlx(self, tmp_path, monkeypatch):
+        """An old local index on a machine without torch can't be searched;
+        a bare search should use the MLX index instead of erroring."""
+        from sentrysearch.store import SentryStore, detect_index
+
+        db = tmp_path / "db"
+        for backend, model in (("local", "qwen2b"), ("mlx", "/m/x")):
+            SentryStore(db_path=db, backend=backend, model=model).add_chunk(
+                "c1", _make_embedding(),
+                {"source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0})
+        monkeypatch.setattr("sentrysearch.store._backend_installed",
+                            lambda backend: backend != "local")
+        assert detect_index(db) == ("mlx", "/m/x")
+
+    def test_nothing_installed_still_names_first_index(self, tmp_path, monkeypatch):
+        """With no usable backend, return the first index anyway so the
+        missing-dependency error tells the user what to install."""
+        from sentrysearch.store import SentryStore, detect_index
+
+        db = tmp_path / "db"
+        SentryStore(db_path=db, backend="local", model="qwen2b").add_chunk(
+            "c1", _make_embedding(),
+            {"source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0})
+        monkeypatch.setattr("sentrysearch.store._backend_installed",
+                            lambda backend: False)
+        assert detect_index(db) == ("local", "qwen2b")
+
+    def test_scoped_detection_ignores_install_state(self, tmp_path, monkeypatch):
+        """An explicit --backend is the user's choice; let the backend itself
+        report what's missing."""
+        from sentrysearch.store import SentryStore, detect_index
+
+        db = tmp_path / "db"
+        SentryStore(db_path=db, backend="local", model="qwen2b").add_chunk(
+            "c1", _make_embedding(),
+            {"source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0})
+        monkeypatch.setattr("sentrysearch.store._backend_installed",
+                            lambda backend: False)
+        assert detect_index(db, backend="local") == ("local", "qwen2b")
+
+    def test_scoped_detection_skips_other_backends(self, tmp_path):
+        from sentrysearch.store import SentryStore, detect_index
+
+        db = tmp_path / "db"
+        SentryStore(db_path=db, backend="gemini").add_chunk(
+            "c1", _make_embedding(),
+            {"source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0})
+        assert detect_index(db) == ("gemini", None)
+        assert detect_index(db, backend="local") == (None, None)
+        assert detect_index(db, backend="mlx") == (None, None)
 
     def test_legacy_local_treated_as_qwen8b(self, tmp_path):
         from sentrysearch.store import SentryStore, detect_index
@@ -354,3 +459,20 @@ class TestDetectIndex:
             "source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0,
         })
         assert detect_index(tmp_path / "db") == ("qwen-cloud", "qwen3-vl-embedding")
+
+
+class TestBackendInstalled:
+    def test_core_backends_always_installed(self):
+        from sentrysearch.store import _backend_installed
+
+        assert _backend_installed("gemini")
+        assert _backend_installed("qwen-cloud")
+
+    def test_missing_module_means_not_installed(self, monkeypatch):
+        import importlib.util
+        from sentrysearch.store import _backend_installed
+
+        monkeypatch.setattr(importlib.util, "find_spec",
+                            lambda name: None if name == "torch" else object())
+        assert not _backend_installed("local")
+        assert _backend_installed("mlx")
